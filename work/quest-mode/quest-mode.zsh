@@ -32,6 +32,7 @@ typeset -g QUEST_LAST_DURATION=0
 typeset -g QUEST_LAST_DAMAGE=0
 typeset -g QUEST_LAST_REWARD_XP=0
 typeset -g QUEST_LAST_REWARD_GOLD=0
+typeset -g QUEST_FAILURE_STREAK=0
 typeset -g QUEST_COMMAND_STARTED_AT=''
 typeset -g QUEST_LAST_COMMAND=''
 typeset -g QUEST_BOSS_ACTIVE=0
@@ -43,6 +44,10 @@ typeset -g QUEST_BOSS_TURNS=0
 typeset -g QUEST_BOSS_GUARD=0
 typeset -g QUEST_BOSS_CHARGE=0
 typeset -g QUEST_BOSS_CONTEXT=''
+typeset -g QUEST_BOSS_AUTO_ENABLED="${QUEST_BOSS_AUTO_ENABLED:-1}"
+typeset -g QUEST_BOSS_AUTO_KEY=''
+typeset -g QUEST_BOSS_AUTO_SOURCE=''
+typeset -g QUEST_BOSS_AUTO_COOLDOWN_UNTIL=0
 typeset -ga QUEST_PENDING_MESSAGES=()
 
 export CLICOLOR=1
@@ -90,6 +95,10 @@ function _quest_git_branch() {
 
 function _quest_zone_name() {
   print -P '%3~'
+}
+
+function _quest_repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
 }
 
 function _quest_xp_for_level() {
@@ -217,6 +226,8 @@ typeset -g QUEST_BOSS_TURNS=${QUEST_BOSS_TURNS}
 typeset -g QUEST_BOSS_GUARD=${QUEST_BOSS_GUARD}
 typeset -g QUEST_BOSS_CHARGE=${QUEST_BOSS_CHARGE}
 typeset -g QUEST_BOSS_CONTEXT=${(qqq)QUEST_BOSS_CONTEXT}
+typeset -g QUEST_BOSS_AUTO_KEY=${(qqq)QUEST_BOSS_AUTO_KEY}
+typeset -g QUEST_BOSS_AUTO_SOURCE=${(qqq)QUEST_BOSS_AUTO_SOURCE}
 EOF
   else
     rm -f "$QUEST_BOSS_STATE_FILE"
@@ -236,10 +247,13 @@ typeset -g QUEST_HP=${QUEST_HP}
 typeset -g QUEST_MAX_HP=${QUEST_MAX_HP}
 typeset -g QUEST_COMMAND_COUNT=${QUEST_COMMAND_COUNT}
 typeset -g QUEST_SUCCESS_STREAK=${QUEST_SUCCESS_STREAK}
+typeset -g QUEST_FAILURE_STREAK=${QUEST_FAILURE_STREAK}
 typeset -g QUEST_ZONES_DISCOVERED=${QUEST_ZONES_DISCOVERED}
 typeset -g QUEST_LEVEL_UPS=${QUEST_LEVEL_UPS}
 typeset -g QUEST_MUSIC_ENABLED=${QUEST_MUSIC_ENABLED}
 typeset -g QUEST_SFX_ENABLED=${QUEST_SFX_ENABLED}
+typeset -g QUEST_BOSS_AUTO_ENABLED=${QUEST_BOSS_AUTO_ENABLED}
+typeset -g QUEST_BOSS_AUTO_COOLDOWN_UNTIL=${QUEST_BOSS_AUTO_COOLDOWN_UNTIL}
 EOF
 
   _quest_save_boss_state
@@ -255,10 +269,13 @@ function _quest_bootstrap_state() {
   : "${QUEST_MAX_HP:=100}"
   : "${QUEST_COMMAND_COUNT:=0}"
   : "${QUEST_SUCCESS_STREAK:=0}"
+  : "${QUEST_FAILURE_STREAK:=0}"
   : "${QUEST_ZONES_DISCOVERED:=0}"
   : "${QUEST_LEVEL_UPS:=0}"
   : "${QUEST_MUSIC_ENABLED:=1}"
   : "${QUEST_SFX_ENABLED:=1}"
+  : "${QUEST_BOSS_AUTO_ENABLED:=1}"
+  : "${QUEST_BOSS_AUTO_COOLDOWN_UNTIL:=0}"
   : "${QUEST_BOSS_ACTIVE:=0}"
   : "${QUEST_BOSS_NAME:=}"
   : "${QUEST_BOSS_HP:=0}"
@@ -268,6 +285,8 @@ function _quest_bootstrap_state() {
   : "${QUEST_BOSS_GUARD:=0}"
   : "${QUEST_BOSS_CHARGE:=0}"
   : "${QUEST_BOSS_CONTEXT:=}"
+  : "${QUEST_BOSS_AUTO_KEY:=}"
+  : "${QUEST_BOSS_AUTO_SOURCE:=}"
 
   _quest_ensure_state_fs || return
 
@@ -283,10 +302,13 @@ function _quest_bootstrap_state() {
   : "${QUEST_MAX_HP:=100}"
   : "${QUEST_COMMAND_COUNT:=0}"
   : "${QUEST_SUCCESS_STREAK:=0}"
+  : "${QUEST_FAILURE_STREAK:=0}"
   : "${QUEST_ZONES_DISCOVERED:=0}"
   : "${QUEST_LEVEL_UPS:=0}"
   : "${QUEST_MUSIC_ENABLED:=1}"
   : "${QUEST_SFX_ENABLED:=1}"
+  : "${QUEST_BOSS_AUTO_ENABLED:=1}"
+  : "${QUEST_BOSS_AUTO_COOLDOWN_UNTIL:=0}"
   if [[ -f "$QUEST_BOSS_STATE_FILE" ]]; then
     source "$QUEST_BOSS_STATE_FILE"
   fi
@@ -299,6 +321,8 @@ function _quest_bootstrap_state() {
   : "${QUEST_BOSS_GUARD:=0}"
   : "${QUEST_BOSS_CHARGE:=0}"
   : "${QUEST_BOSS_CONTEXT:=}"
+  : "${QUEST_BOSS_AUTO_KEY:=}"
+  : "${QUEST_BOSS_AUTO_SOURCE:=}"
 
   typeset -g QUEST_STATE_DIRTY=1
   _quest_save_state
@@ -374,6 +398,105 @@ function _quest_discover_zone() {
   fi
 }
 
+function _quest_spawn_boss() {
+  local name hp context auto_key auto_source
+  name="$1"
+  hp="$2"
+  context="$3"
+  auto_key="${4:-}"
+  auto_source="${5:-manual}"
+
+  (( QUEST_BOSS_ACTIVE )) && return 1
+
+  typeset -g QUEST_BOSS_NAME="$name"
+  typeset -g QUEST_BOSS_MAX_HP="$hp"
+  typeset -g QUEST_BOSS_CONTEXT="$context"
+  typeset -g QUEST_BOSS_ACTIVE=1
+  typeset -g QUEST_BOSS_HP="$hp"
+  typeset -g QUEST_BOSS_PHASE=1
+  typeset -g QUEST_BOSS_TURNS=0
+  typeset -g QUEST_BOSS_GUARD=0
+  typeset -g QUEST_BOSS_CHARGE=0
+  typeset -g QUEST_BOSS_AUTO_KEY="$auto_key"
+  typeset -g QUEST_BOSS_AUTO_SOURCE="$auto_source"
+  typeset -g QUEST_BOSS_AUTO_COOLDOWN_UNTIL=$(( QUEST_COMMAND_COUNT + 10 ))
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+  _quest_log_event "Started ${auto_source} boss fight against ${QUEST_BOSS_NAME}"
+  return 0
+}
+
+function _quest_repo_todo_count() {
+  local repo_root="$1"
+  rg -n --no-messages '\b(TODO|FIXME|XXX)\b' "$repo_root" -g '!/.git' 2>/dev/null | wc -l | tr -d ' '
+}
+
+function _quest_maybe_trigger_auto_boss() {
+  local repo_root branch unmerged changed untracked todo_count spawn_key total_changes
+
+  (( QUEST_BOSS_AUTO_ENABLED )) || return
+  (( QUEST_BOSS_ACTIVE == 0 )) || return
+  (( QUEST_COMMAND_COUNT < QUEST_BOSS_AUTO_COOLDOWN_UNTIL )) && return
+
+  if (( QUEST_FAILURE_STREAK >= 3 )); then
+    spawn_key="error:${PWD:A}"
+    if _quest_spawn_boss "The Error Wraith" \
+      $(( 68 + QUEST_LEVEL * 8 + QUEST_FAILURE_STREAK * 3 )) \
+      "$(_quest_zone_name)" \
+      "$spawn_key" \
+      "natural"; then
+      _quest_play_sfx discovery
+      _quest_queue_message "Repeated failures have summoned The Error Wraith."
+    fi
+    return
+  fi
+
+  repo_root="$(_quest_repo_root)" || return
+  branch="$(_quest_git_branch 2>/dev/null)"
+  unmerged="$(git -C "$repo_root" diff --name-only --diff-filter=U 2>/dev/null | awk 'END{print NR+0}')"
+  if (( unmerged > 0 )); then
+    spawn_key="merge:${repo_root}:${branch}"
+    if _quest_spawn_boss "The Merge Warden" \
+      $(( 92 + QUEST_LEVEL * 10 + unmerged * 4 )) \
+      "${branch:-detached-quest}" \
+      "$spawn_key" \
+      "natural"; then
+      _quest_play_sfx discovery
+      _quest_queue_message "Merge conflict energy has awakened The Merge Warden."
+    fi
+    return
+  fi
+
+  changed="$(git -C "$repo_root" status --porcelain 2>/dev/null | awk '$1 != "??" {count++} END{print count+0}')"
+  untracked="$(git -C "$repo_root" status --porcelain 2>/dev/null | awk '$1 == "??" {count++} END{print count+0}')"
+  total_changes=$(( changed + untracked ))
+  if (( total_changes >= 8 )); then
+    spawn_key="chaos:${repo_root}:${branch}"
+    if _quest_spawn_boss "The Chaos Warden" \
+      $(( 84 + QUEST_LEVEL * 9 + total_changes * 2 )) \
+      "${branch:-working-tree}" \
+      "$spawn_key" \
+      "natural"; then
+      _quest_play_sfx discovery
+      _quest_queue_message "Your cluttered working tree has drawn The Chaos Warden."
+    fi
+    return
+  fi
+
+  todo_count="$(_quest_repo_todo_count "$repo_root")"
+  if (( todo_count >= 12 )); then
+    spawn_key="debt:${repo_root}"
+    if _quest_spawn_boss "The Debt Specter" \
+      $(( 78 + QUEST_LEVEL * 8 + todo_count / 2 )) \
+      "${branch:-technical-debt}" \
+      "$spawn_key" \
+      "natural"; then
+      _quest_play_sfx discovery
+      _quest_queue_message "Neglected TODOs have conjured The Debt Specter."
+    fi
+  fi
+}
+
 function _quest_apply_command_outcome() {
   local command exit_code xp gold heal damage
   command="${QUEST_LAST_COMMAND}"
@@ -390,6 +513,7 @@ function _quest_apply_command_outcome() {
 
   if (( exit_code == 0 )); then
     (( QUEST_SUCCESS_STREAK += 1 ))
+    typeset -g QUEST_FAILURE_STREAK=0
     xp=3
     gold=1
     heal=1
@@ -419,6 +543,7 @@ function _quest_apply_command_outcome() {
     fi
   else
     (( QUEST_SUCCESS_STREAK = 0 ))
+    (( QUEST_FAILURE_STREAK += 1 ))
     damage=$(( exit_code > 12 ? 12 : exit_code + 2 ))
     (( QUEST_HP -= damage ))
     _quest_play_sfx damage
@@ -519,6 +644,7 @@ function _quest_precmd() {
   fi
 
   _quest_apply_command_outcome
+  _quest_maybe_trigger_auto_boss
   _quest_set_window_title
   _quest_set_iterm_badge
   _quest_maybe_start_music
@@ -613,6 +739,7 @@ function quest-stats() {
   print -P "%F{178}Level:%f %F{230}${QUEST_LEVEL}%f   %F{178}XP:%f %F{230}${QUEST_XP}%f   %F{178}To next level:%f %F{230}${needed}%f"
   print -P "%F{178}HP:%f %F{230}${QUEST_HP}/${QUEST_MAX_HP}%f   %F{178}Gold:%f %F{220}${QUEST_GOLD}g%f   %F{178}Streak:%f %F{230}${QUEST_SUCCESS_STREAK}%f"
   print -P "%F{178}Commands:%f %F{230}${QUEST_COMMAND_COUNT}%f   %F{178}Zones discovered:%f %F{230}${QUEST_ZONES_DISCOVERED}%f   %F{178}Level-ups:%f %F{230}${QUEST_LEVEL_UPS}%f"
+  print -P "%F{178}Failure streak:%f %F{230}${QUEST_FAILURE_STREAK}%f   %F{178}Auto bosses:%f %F{230}${QUEST_BOSS_AUTO_ENABLED}%f"
   if _quest_music_is_running; then
     print -P "%F{178}Music:%f %F{230}playing%f   %F{178}SFX:%f %F{230}${QUEST_SFX_ENABLED}%f"
   else
@@ -620,6 +747,7 @@ function quest-stats() {
   fi
   if (( QUEST_BOSS_ACTIVE )); then
     print -P "%F{178}Boss:%f %F{160}${QUEST_BOSS_NAME}%f   %F{178}Boss HP:%f %F{230}${QUEST_BOSS_HP}/${QUEST_BOSS_MAX_HP}%f   %F{178}Charge:%f %F{230}${QUEST_BOSS_CHARGE}/3%f"
+    print -P "%F{178}Boss source:%f %F{230}${QUEST_BOSS_AUTO_SOURCE:-manual}%f"
   fi
 }
 
@@ -644,6 +772,7 @@ Core
   quest-docs         Show this guide.
   quest-examples     Show copy-paste examples that trigger quest mechanics.
   quest-boss         Show the current boss encounter or tell you how to start one.
+  quest-boss-auto    Show or toggle natural auto-boss spawning.
   quest-stats        Show hero stats, progression, music, and SFX state.
   quest-journal      Show recent quest events.
   quest-log          Show git status for the current repo.
@@ -678,6 +807,12 @@ How Progression Works
   Any successful command grants a small baseline reward: +3 XP, +1 gold.
   Some commands grant extra rewards, especially git work, tests, checks, builds, and exploration commands.
   Every 7 successful commands in a row grants a momentum bonus.
+
+Natural Boss Triggers
+  Three failed commands in a row can summon The Error Wraith.
+  Entering a repo with merge conflicts can summon The Merge Warden.
+  Working in a repo with many changed and untracked files can summon The Chaos Warden.
+  Entering a repo dense with TODO, FIXME, or XXX markers can summon The Debt Specter.
 EOF
 }
 
@@ -727,6 +862,12 @@ See a boss-fight style sequence
   quest-boss-special
   quest-boss-flee
   Start the fight, build charge with attack or defend, then spend it with special.
+
+See a natural boss trigger
+  false
+  false
+  false
+  Three failures in a row can naturally summon The Error Wraith.
 EOF
 }
 
@@ -807,24 +948,18 @@ function quest-boss-start() {
 
   branch="$(_quest_git_branch 2>/dev/null)"
   if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    typeset -g QUEST_BOSS_NAME="The Merge Warden"
-    typeset -g QUEST_BOSS_MAX_HP=$(( 90 + QUEST_LEVEL * 10 ))
-    typeset -g QUEST_BOSS_CONTEXT="${branch:-detached-quest}"
+    _quest_spawn_boss "The Merge Warden" \
+      $(( 90 + QUEST_LEVEL * 10 )) \
+      "${branch:-detached-quest}" \
+      "" \
+      "manual"
   else
-    typeset -g QUEST_BOSS_NAME="The Ruins Sentinel"
-    typeset -g QUEST_BOSS_MAX_HP=$(( 72 + QUEST_LEVEL * 8 ))
-    typeset -g QUEST_BOSS_CONTEXT="$(_quest_zone_name)"
+    _quest_spawn_boss "The Ruins Sentinel" \
+      $(( 72 + QUEST_LEVEL * 8 )) \
+      "$(_quest_zone_name)" \
+      "" \
+      "manual"
   fi
-
-  typeset -g QUEST_BOSS_ACTIVE=1
-  typeset -g QUEST_BOSS_HP=$QUEST_BOSS_MAX_HP
-  typeset -g QUEST_BOSS_PHASE=1
-  typeset -g QUEST_BOSS_TURNS=0
-  typeset -g QUEST_BOSS_GUARD=0
-  typeset -g QUEST_BOSS_CHARGE=0
-  typeset -g QUEST_STATE_DIRTY=1
-  _quest_save_state
-  _quest_log_event "Started boss fight against ${QUEST_BOSS_NAME}"
 
   print -P "%F{178}${QUEST_BOSS_NAME} emerges in ${QUEST_BOSS_CONTEXT}.%f"
   quest-boss-status
@@ -838,6 +973,7 @@ function quest-boss-status() {
   fi
 
   print -P "%F{178}Boss:%f %F{230}${QUEST_BOSS_NAME}%f"
+  print -P "%F{178}Source:%f %F{230}${QUEST_BOSS_AUTO_SOURCE:-manual}%f   %F{178}Arena:%f %F{230}${QUEST_BOSS_CONTEXT}%f"
   print -P "%F{178}Boss HP:%f %F{230}${QUEST_BOSS_HP}/${QUEST_BOSS_MAX_HP}%f   %F{178}Phase:%f %F{230}${QUEST_BOSS_PHASE}%f   %F{178}Turns:%f %F{230}${QUEST_BOSS_TURNS}%f"
   print -P "%F{178}Hero HP:%f %F{230}${QUEST_HP}/${QUEST_MAX_HP}%f   %F{178}Charge:%f %F{230}${QUEST_BOSS_CHARGE}/3%f   %F{178}Guard:%f %F{230}${QUEST_BOSS_GUARD}%f"
   print -P '%F{178}Actions:%f quest-boss-attack, quest-boss-defend, quest-boss-special, quest-boss-flee'
@@ -918,6 +1054,35 @@ function quest-boss-flee() {
 
 function quest-boss() {
   quest-boss-status
+}
+
+function quest-boss-auto() {
+  case "$1" in
+    on)
+      typeset -g QUEST_BOSS_AUTO_ENABLED=1
+      typeset -g QUEST_STATE_DIRTY=1
+      _quest_save_state
+      print -P '%F{178}Natural boss spawning enabled.%f'
+      ;;
+    off)
+      typeset -g QUEST_BOSS_AUTO_ENABLED=0
+      typeset -g QUEST_STATE_DIRTY=1
+      _quest_save_state
+      print -P '%F{178}Natural boss spawning disabled.%f'
+      ;;
+    toggle)
+      if (( QUEST_BOSS_AUTO_ENABLED )); then
+        quest-boss-auto off
+      else
+        quest-boss-auto on
+      fi
+      ;;
+    *)
+      print -P "%F{178}Auto bosses:%f %F{230}${QUEST_BOSS_AUTO_ENABLED}%f"
+      print -P "%F{178}Cooldown until command:%f %F{230}${QUEST_BOSS_AUTO_COOLDOWN_UNTIL}%f"
+      print -P '%F{230}Use quest-boss-auto on, quest-boss-auto off, or quest-boss-auto toggle.%f'
+      ;;
+  esac
 }
 
 function quest-rest() {
