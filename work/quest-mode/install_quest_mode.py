@@ -49,6 +49,14 @@ def install_background(background_file: Path, home: Path):
     return target_file
 
 
+def install_audio(audio_dir: Path, home: Path):
+    target_dir = home / ".config" / "quest-mode" / "audio"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source in audio_dir.glob("*.wav"):
+        shutil.copy2(source, target_dir / source.name)
+    return target_dir
+
+
 def initialize_state_dir(home: Path):
     state_dir = home / ".config" / "quest-mode" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -156,22 +164,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--quest-file", required=True, type=Path)
     parser.add_argument("--background-file", required=True, type=Path)
+    parser.add_argument("--audio-dir", required=True, type=Path)
     parser.add_argument("--home", default=Path.home(), type=Path)
     args = parser.parse_args()
 
     home = args.home.expanduser().resolve()
     quest_file = args.quest_file.expanduser().resolve()
     background_file = args.background_file.expanduser().resolve()
+    audio_dir = args.audio_dir.expanduser().resolve()
 
     backup_dir = backup_files(home)
     quest_target = install_shell_overlay(quest_file, home)
     background_target = install_background(background_file, home)
+    audio_target = install_audio(audio_dir, home)
     state_dir = initialize_state_dir(home)
     plist_path, guid = configure_iterm(background_target, home)
 
     print(f"backup_dir={backup_dir}")
     print(f"quest_file={quest_target}")
     print(f"background_file={background_target}")
+    print(f"audio_dir={audio_target}")
     print(f"state_dir={state_dir}")
     print(f"iterm_plist={plist_path}")
     print(f"iterm_guid={guid}")

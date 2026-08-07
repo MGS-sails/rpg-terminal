@@ -12,6 +12,17 @@ typeset -g QUEST_STATE_DIR="${HOME}/.config/quest-mode/state"
 typeset -g QUEST_STATE_FILE="${QUEST_STATE_DIR}/hero.zsh"
 typeset -g QUEST_JOURNAL_FILE="${QUEST_STATE_DIR}/journal.log"
 typeset -g QUEST_ZONES_FILE="${QUEST_STATE_DIR}/discovered-zones"
+typeset -g QUEST_AUDIO_DIR="${HOME}/.config/quest-mode/audio"
+typeset -g QUEST_AUDIO_PID_FILE="${QUEST_STATE_DIR}/music.pid"
+typeset -g QUEST_AUDIO_AMBIENT="${QUEST_AUDIO_DIR}/quest-ambient.wav"
+typeset -g QUEST_AUDIO_DISCOVERY="${QUEST_AUDIO_DIR}/quest-discovery.wav"
+typeset -g QUEST_AUDIO_LEVEL_UP="${QUEST_AUDIO_DIR}/quest-level-up.wav"
+typeset -g QUEST_AUDIO_DAMAGE="${QUEST_AUDIO_DIR}/quest-damage.wav"
+typeset -g QUEST_AUDIO_REST="${QUEST_AUDIO_DIR}/quest-rest.wav"
+typeset -g QUEST_MUSIC_ENABLED="${QUEST_MUSIC_ENABLED:-1}"
+typeset -g QUEST_MUSIC_AUTOSTART="${QUEST_MUSIC_AUTOSTART:-1}"
+typeset -g QUEST_SFX_ENABLED="${QUEST_SFX_ENABLED:-1}"
+typeset -g QUEST_MUSIC_ANNOUNCED=0
 typeset -g QUEST_STATE_ENABLED=1
 typeset -g QUEST_BANNER_SHOWN=0
 typeset -g QUEST_STATE_DIRTY=0
@@ -87,6 +98,77 @@ function _quest_queue_message() {
   QUEST_PENDING_MESSAGES+=("$1")
 }
 
+function _quest_audio_ready() {
+  command -v afplay >/dev/null 2>&1 || return 1
+  [[ -f "$QUEST_AUDIO_AMBIENT" ]] || return 1
+  return 0
+}
+
+function _quest_music_is_running() {
+  local pid
+  [[ -f "$QUEST_AUDIO_PID_FILE" ]] || return 1
+  pid="$(<"$QUEST_AUDIO_PID_FILE")"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+function _quest_play_sfx() {
+  local kind file
+  kind="$1"
+  (( QUEST_SFX_ENABLED )) || return
+  command -v afplay >/dev/null 2>&1 || return
+
+  case "$kind" in
+    discovery) file="$QUEST_AUDIO_DISCOVERY" ;;
+    level-up) file="$QUEST_AUDIO_LEVEL_UP" ;;
+    damage) file="$QUEST_AUDIO_DAMAGE" ;;
+    rest) file="$QUEST_AUDIO_REST" ;;
+    *) return ;;
+  esac
+
+  [[ -f "$file" ]] || return
+  { afplay "$file" >/dev/null 2>&1 &! } 2>/dev/null
+}
+
+function _quest_music_start() {
+  local ambient_q
+  (( QUEST_MUSIC_ENABLED )) || return 1
+  _quest_ensure_state_fs || return 1
+  _quest_audio_ready || return 1
+
+  if _quest_music_is_running; then
+    return 0
+  fi
+
+  ambient_q="${(q)QUEST_AUDIO_AMBIENT}"
+  nohup /bin/sh -c "trap 'exit 0' TERM INT; while :; do /usr/bin/afplay ${ambient_q}; done" \
+    >/dev/null 2>&1 &
+  print -r -- "$!" >| "$QUEST_AUDIO_PID_FILE"
+  return 0
+}
+
+function _quest_music_stop() {
+  local pid
+  [[ -f "$QUEST_AUDIO_PID_FILE" ]] || return 0
+  pid="$(<"$QUEST_AUDIO_PID_FILE")"
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  rm -f "$QUEST_AUDIO_PID_FILE"
+}
+
+function _quest_maybe_start_music() {
+  (( QUEST_MUSIC_AUTOSTART )) || return
+  (( QUEST_MUSIC_ENABLED )) || return
+  [[ "${TERM_PROGRAM:-}" == "iTerm.app" || "${LC_TERMINAL:-}" == "iTerm2" ]] || return
+  _quest_audio_ready || return
+
+  if _quest_music_start && (( QUEST_MUSIC_ANNOUNCED == 0 )); then
+    typeset -g QUEST_MUSIC_ANNOUNCED=1
+    _quest_queue_message 'The tavern band has begun to play.'
+  fi
+}
+
 function _quest_ensure_state_fs() {
   (( QUEST_STATE_ENABLED )) || return 1
 
@@ -126,6 +208,8 @@ typeset -g QUEST_COMMAND_COUNT=${QUEST_COMMAND_COUNT}
 typeset -g QUEST_SUCCESS_STREAK=${QUEST_SUCCESS_STREAK}
 typeset -g QUEST_ZONES_DISCOVERED=${QUEST_ZONES_DISCOVERED}
 typeset -g QUEST_LEVEL_UPS=${QUEST_LEVEL_UPS}
+typeset -g QUEST_MUSIC_ENABLED=${QUEST_MUSIC_ENABLED}
+typeset -g QUEST_SFX_ENABLED=${QUEST_SFX_ENABLED}
 EOF
 
   typeset -g QUEST_STATE_DIRTY=0
@@ -142,6 +226,8 @@ function _quest_bootstrap_state() {
   : "${QUEST_SUCCESS_STREAK:=0}"
   : "${QUEST_ZONES_DISCOVERED:=0}"
   : "${QUEST_LEVEL_UPS:=0}"
+  : "${QUEST_MUSIC_ENABLED:=1}"
+  : "${QUEST_SFX_ENABLED:=1}"
 
   _quest_ensure_state_fs || return
 
@@ -159,6 +245,8 @@ function _quest_bootstrap_state() {
   : "${QUEST_SUCCESS_STREAK:=0}"
   : "${QUEST_ZONES_DISCOVERED:=0}"
   : "${QUEST_LEVEL_UPS:=0}"
+  : "${QUEST_MUSIC_ENABLED:=1}"
+  : "${QUEST_SFX_ENABLED:=1}"
 
   typeset -g QUEST_STATE_DIRTY=1
   _quest_save_state
@@ -202,6 +290,7 @@ function _quest_resolve_level_progress() {
     (( QUEST_MAX_HP += 10 ))
     (( QUEST_HP = QUEST_MAX_HP ))
     (( QUEST_GOLD += 20 ))
+    _quest_play_sfx level-up
     typeset -g QUEST_STATE_DIRTY=1
     _quest_queue_message "Level up! You are now level ${QUEST_LEVEL}. Max HP +10, +20 gold."
     _quest_log_event "Leveled up to ${QUEST_LEVEL}"
@@ -223,6 +312,7 @@ function _quest_discover_zone() {
     (( QUEST_ZONES_DISCOVERED += 1 ))
     (( QUEST_XP += 12 ))
     (( QUEST_GOLD += 4 ))
+    _quest_play_sfx discovery
     typeset -g QUEST_STATE_DIRTY=1
     _quest_queue_message "New zone discovered: ${zone_name} (+12 XP, +4 gold)"
     _quest_log_event "Discovered zone ${zone_key}"
@@ -279,6 +369,7 @@ function _quest_apply_command_outcome() {
     (( QUEST_SUCCESS_STREAK = 0 ))
     damage=$(( status > 12 ? 12 : status + 2 ))
     (( QUEST_HP -= damage ))
+    _quest_play_sfx damage
     typeset -g QUEST_LAST_DAMAGE="$damage"
     typeset -g QUEST_LAST_REWARD_XP=0
     typeset -g QUEST_LAST_REWARD_GOLD=0
@@ -365,6 +456,7 @@ function _quest_precmd() {
   _quest_apply_command_outcome
   _quest_set_window_title
   _quest_set_iterm_badge
+  _quest_maybe_start_music
   _quest_print_banner_once
   _quest_flush_pending_messages
   _quest_save_state
@@ -456,6 +548,11 @@ function quest-stats() {
   print -P "%F{178}Level:%f %F{230}${QUEST_LEVEL}%f   %F{178}XP:%f %F{230}${QUEST_XP}%f   %F{178}To next level:%f %F{230}${needed}%f"
   print -P "%F{178}HP:%f %F{230}${QUEST_HP}/${QUEST_MAX_HP}%f   %F{178}Gold:%f %F{220}${QUEST_GOLD}g%f   %F{178}Streak:%f %F{230}${QUEST_SUCCESS_STREAK}%f"
   print -P "%F{178}Commands:%f %F{230}${QUEST_COMMAND_COUNT}%f   %F{178}Zones discovered:%f %F{230}${QUEST_ZONES_DISCOVERED}%f   %F{178}Level-ups:%f %F{230}${QUEST_LEVEL_UPS}%f"
+  if _quest_music_is_running; then
+    print -P "%F{178}Music:%f %F{230}playing%f   %F{178}SFX:%f %F{230}${QUEST_SFX_ENABLED}%f"
+  else
+    print -P "%F{178}Music:%f %F{160}stopped%f   %F{178}SFX:%f %F{230}${QUEST_SFX_ENABLED}%f"
+  fi
 }
 
 function quest-journal() {
@@ -474,12 +571,53 @@ function quest-journal() {
 function quest-rest() {
   (( QUEST_HP = QUEST_HP + 10 > QUEST_MAX_HP ? QUEST_MAX_HP : QUEST_HP + 10 ))
   typeset -g QUEST_STATE_DIRTY=1
+  _quest_play_sfx rest
   _quest_queue_message 'You rested by the fire and recovered 10 HP.'
   _quest_log_event 'Rested at camp'
   clear
   typeset -g QUEST_BANNER_SHOWN=0
   _quest_print_banner_once
   _quest_flush_pending_messages
+  _quest_save_state
+}
+
+function quest-music-start() {
+  typeset -g QUEST_MUSIC_ENABLED=1
+  typeset -g QUEST_STATE_DIRTY=1
+  if _quest_music_start; then
+    _quest_save_state
+    print -P '%F{178}The tavern band tunes up.%f'
+  else
+    print -P '%F{160}No band could be found. Check quest audio files.%f'
+  fi
+}
+
+function quest-music-stop() {
+  typeset -g QUEST_MUSIC_ENABLED=0
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_music_stop
+  _quest_save_state
+  print -P '%F{178}The hall falls quiet.%f'
+}
+
+function quest-music-toggle() {
+  if _quest_music_is_running; then
+    quest-music-stop
+  else
+    quest-music-start
+  fi
+}
+
+function quest-sfx-toggle() {
+  if (( QUEST_SFX_ENABLED )); then
+    typeset -g QUEST_SFX_ENABLED=0
+    print -P '%F{178}Quest sound effects muted.%f'
+  else
+    typeset -g QUEST_SFX_ENABLED=1
+    print -P '%F{178}Quest sound effects enabled.%f'
+    _quest_play_sfx discovery
+  fi
+  typeset -g QUEST_STATE_DIRTY=1
   _quest_save_state
 }
 
