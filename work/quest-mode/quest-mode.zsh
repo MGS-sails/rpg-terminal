@@ -323,9 +323,9 @@ function _quest_discover_zone() {
 }
 
 function _quest_apply_command_outcome() {
-  local command status xp gold heal damage
+  local command exit_code xp gold heal damage
   command="${QUEST_LAST_COMMAND}"
-  status="${QUEST_LAST_STATUS}"
+  exit_code="${QUEST_LAST_STATUS}"
 
   [[ -n "$command" ]] || return
 
@@ -336,7 +336,7 @@ function _quest_apply_command_outcome() {
 
   (( QUEST_COMMAND_COUNT += 1 ))
 
-  if (( status == 0 )); then
+  if (( exit_code == 0 )); then
     (( QUEST_SUCCESS_STREAK += 1 ))
     xp=3
     gold=1
@@ -367,7 +367,7 @@ function _quest_apply_command_outcome() {
     fi
   else
     (( QUEST_SUCCESS_STREAK = 0 ))
-    damage=$(( status > 12 ? 12 : status + 2 ))
+    damage=$(( exit_code > 12 ? 12 : exit_code + 2 ))
     (( QUEST_HP -= damage ))
     _quest_play_sfx damage
     typeset -g QUEST_LAST_DAMAGE="$damage"
@@ -433,7 +433,7 @@ function _quest_print_banner_once() {
   print -P '%F{178}      .::.      Quest Mode Engaged      .::.%f'
   print -P "%F{143}   Hero:%f %F{230}${QUEST_PLAYER_NAME}%f   %F{143}Level:%f %F{229}${QUEST_LEVEL}%f   %F{143}Gold:%f %F{220}${QUEST_GOLD}g%f"
   print -P "%F{143}   HP:%f %F{230}${QUEST_HP}/${QUEST_MAX_HP}%f   %F{143}Zones:%f %F{229}${QUEST_ZONES_DISCOVERED}%f   %F{143}XP:%f %F{222}${QUEST_XP}%f"
-  print -P '%F{66}   Tip:%f use %F{230}quest-stats%f, %F{230}quest-journal%f, %F{230}quest-log%f, or %F{230}quest-rest%f'
+  print -P '%F{66}   Tip:%f use %F{230}quest-docs%f, %F{230}quest-stats%f, %F{230}quest-journal%f, or %F{230}quest-rest%f'
 }
 
 function _quest_preexec() {
@@ -442,11 +442,11 @@ function _quest_preexec() {
 }
 
 function _quest_precmd() {
-  local status now
-  status=$?
+  local exit_code now
+  exit_code=$?
   now="${EPOCHREALTIME:-}"
 
-  typeset -g QUEST_LAST_STATUS="$status"
+  typeset -g QUEST_LAST_STATUS="$exit_code"
   if [[ -n "$QUEST_COMMAND_STARTED_AT" && -n "$now" ]]; then
     typeset -g QUEST_LAST_DURATION="$(( now - QUEST_COMMAND_STARTED_AT ))"
   else
@@ -565,6 +565,158 @@ function quest-journal() {
     tail -n 12 "$QUEST_JOURNAL_FILE"
   else
     print -P '%F{160}Your journal is still blank.%f'
+  fi
+}
+
+function quest-docs() {
+  cat <<'EOF'
+Quest Mode Commands
+
+Core
+  quest-docs         Show this guide.
+  quest-examples     Show copy-paste examples that trigger quest mechanics.
+  quest-boss         Show a sample boss-fight runbook for the current area.
+  quest-stats        Show hero stats, progression, music, and SFX state.
+  quest-journal      Show recent quest events.
+  quest-log          Show git status for the current repo.
+  quest-map          Show your current zone.
+  quest-rest         Recover 10 HP.
+
+Audio
+  quest-music-start  Start ambient tavern music.
+  quest-music-stop   Stop ambient tavern music.
+  quest-music-toggle Toggle ambient music on or off.
+  quest-sfx-toggle   Toggle quest sound effects on or off.
+
+How HP Works
+  HP goes down when a command fails with a non-zero exit code.
+  Damage formula: exit code + 2, capped at 12 damage.
+  Example: exit code 1 -> 3 damage, exit code 2 -> 4 damage, exit code 127 -> 12 damage.
+  Successful commands heal 1 HP up to your max HP.
+  quest-rest heals 10 HP.
+  Leveling up fully restores HP and raises max HP by 10.
+  If HP falls to 0 or below, you respawn at full HP and lose 10 gold.
+
+How Progression Works
+  First time entering a directory counts as discovering a new zone: +12 XP, +4 gold.
+  Any successful command grants a small baseline reward: +3 XP, +1 gold.
+  Some commands grant extra rewards, especially git work, tests, checks, builds, and exploration commands.
+  Every 7 successful commands in a row grants a momentum bonus.
+EOF
+}
+
+function quest-examples() {
+  cat <<'EOF'
+Quest Mode Examples
+
+See HP go down
+  false
+  This exits with code 1, so you take 3 damage.
+
+  not_a_real_command
+  This usually exits with code 127, so you take the capped 12 damage.
+
+See healing and small rewards
+  pwd
+  ls
+  rg quest ~/.config/quest-mode 2>/dev/null
+  Each successful command heals 1 HP and grants baseline XP/gold.
+
+See zone discovery
+  mkdir -p /tmp/quest-ruins
+  cd /tmp/quest-ruins
+  The first time you enter a new directory, it counts as a discovered zone.
+
+See rest
+  quest-rest
+  Recovers 10 HP and plays the rest sound.
+
+See audio controls
+  quest-music-toggle
+  quest-sfx-toggle
+
+See a full mini run
+  quest-stats
+  false
+  mkdir -p /tmp/quest-ruins && cd /tmp/quest-ruins
+  pwd
+  quest-rest
+  quest-journal
+
+See a boss-fight style sequence
+  quest-boss
+  This prints a themed challenge sequence for your current area or repo.
+EOF
+}
+
+function quest-boss() {
+  local zone branch boss_name
+  zone="$(_quest_zone_name)"
+  branch="$(_quest_git_branch 2>/dev/null)"
+
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    boss_name="The Merge Warden"
+    cat <<EOF
+Boss Fight: ${boss_name}
+Arena: ${zone}
+Questline: ${branch:-detached-quest}
+
+Suggested battle flow
+  1. Scout the arena
+     quest-log
+     git diff --stat
+
+  2. Reveal hidden weaknesses
+     rg TODO .
+     git branch --show-current
+
+  3. Survive incoming damage
+     Run one intentionally failing command if you want to watch HP drop:
+     false
+
+  4. Counterattack
+     Run your usual test or check command for this repo.
+     Example:
+     git status
+
+  5. Land the finisher
+     git add <files>
+     git commit -m "Defeat ${boss_name}"
+
+What this demonstrates
+  - HP loss from failures
+  - passive healing from successful commands
+  - higher rewards from git activity
+  - journal entries and streak bonuses
+EOF
+  else
+    boss_name="The Ruins Sentinel"
+    cat <<EOF
+Boss Fight: ${boss_name}
+Arena: ${zone}
+
+Suggested battle flow
+  1. Enter a new zone
+     mkdir -p /tmp/ruins-sentinel
+     cd /tmp/ruins-sentinel
+
+  2. Take a hit
+     false
+
+  3. Recover and gather strength
+     pwd
+     ls
+     quest-rest
+
+  4. Check your battle log
+     quest-stats
+     quest-journal
+
+What this demonstrates
+  - zone discovery rewards
+  - HP loss and healing
+  - persistent progression outside a git repo
+EOF
   fi
 }
 
