@@ -10,6 +10,7 @@ typeset -g QUEST_MODE_BADGE_PREFIX="${QUEST_MODE_BADGE_PREFIX:-QUEST MODE}"
 typeset -g QUEST_MODE_ENABLE_BANNER="${QUEST_MODE_ENABLE_BANNER:-1}"
 typeset -g QUEST_STATE_DIR="${HOME}/.config/quest-mode/state"
 typeset -g QUEST_STATE_FILE="${QUEST_STATE_DIR}/hero.zsh"
+typeset -g QUEST_BOSS_STATE_FILE="${QUEST_STATE_DIR}/boss.zsh"
 typeset -g QUEST_JOURNAL_FILE="${QUEST_STATE_DIR}/journal.log"
 typeset -g QUEST_ZONES_FILE="${QUEST_STATE_DIR}/discovered-zones"
 typeset -g QUEST_AUDIO_DIR="${HOME}/.config/quest-mode/audio"
@@ -33,6 +34,15 @@ typeset -g QUEST_LAST_REWARD_XP=0
 typeset -g QUEST_LAST_REWARD_GOLD=0
 typeset -g QUEST_COMMAND_STARTED_AT=''
 typeset -g QUEST_LAST_COMMAND=''
+typeset -g QUEST_BOSS_ACTIVE=0
+typeset -g QUEST_BOSS_NAME=''
+typeset -g QUEST_BOSS_HP=0
+typeset -g QUEST_BOSS_MAX_HP=0
+typeset -g QUEST_BOSS_PHASE=1
+typeset -g QUEST_BOSS_TURNS=0
+typeset -g QUEST_BOSS_GUARD=0
+typeset -g QUEST_BOSS_CHARGE=0
+typeset -g QUEST_BOSS_CONTEXT=''
 typeset -ga QUEST_PENDING_MESSAGES=()
 
 export CLICOLOR=1
@@ -193,6 +203,26 @@ function _quest_log_event() {
   print -r -- "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$QUEST_JOURNAL_FILE"
 }
 
+function _quest_save_boss_state() {
+  _quest_ensure_state_fs || return
+
+  if (( QUEST_BOSS_ACTIVE )); then
+    cat >| "$QUEST_BOSS_STATE_FILE" <<EOF
+typeset -g QUEST_BOSS_ACTIVE=${QUEST_BOSS_ACTIVE}
+typeset -g QUEST_BOSS_NAME=${(qqq)QUEST_BOSS_NAME}
+typeset -g QUEST_BOSS_HP=${QUEST_BOSS_HP}
+typeset -g QUEST_BOSS_MAX_HP=${QUEST_BOSS_MAX_HP}
+typeset -g QUEST_BOSS_PHASE=${QUEST_BOSS_PHASE}
+typeset -g QUEST_BOSS_TURNS=${QUEST_BOSS_TURNS}
+typeset -g QUEST_BOSS_GUARD=${QUEST_BOSS_GUARD}
+typeset -g QUEST_BOSS_CHARGE=${QUEST_BOSS_CHARGE}
+typeset -g QUEST_BOSS_CONTEXT=${(qqq)QUEST_BOSS_CONTEXT}
+EOF
+  else
+    rm -f "$QUEST_BOSS_STATE_FILE"
+  fi
+}
+
 function _quest_save_state() {
   (( QUEST_STATE_DIRTY )) || return
   _quest_ensure_state_fs || return
@@ -212,6 +242,7 @@ typeset -g QUEST_MUSIC_ENABLED=${QUEST_MUSIC_ENABLED}
 typeset -g QUEST_SFX_ENABLED=${QUEST_SFX_ENABLED}
 EOF
 
+  _quest_save_boss_state
   typeset -g QUEST_STATE_DIRTY=0
 }
 
@@ -228,6 +259,15 @@ function _quest_bootstrap_state() {
   : "${QUEST_LEVEL_UPS:=0}"
   : "${QUEST_MUSIC_ENABLED:=1}"
   : "${QUEST_SFX_ENABLED:=1}"
+  : "${QUEST_BOSS_ACTIVE:=0}"
+  : "${QUEST_BOSS_NAME:=}"
+  : "${QUEST_BOSS_HP:=0}"
+  : "${QUEST_BOSS_MAX_HP:=0}"
+  : "${QUEST_BOSS_PHASE:=1}"
+  : "${QUEST_BOSS_TURNS:=0}"
+  : "${QUEST_BOSS_GUARD:=0}"
+  : "${QUEST_BOSS_CHARGE:=0}"
+  : "${QUEST_BOSS_CONTEXT:=}"
 
   _quest_ensure_state_fs || return
 
@@ -247,6 +287,18 @@ function _quest_bootstrap_state() {
   : "${QUEST_LEVEL_UPS:=0}"
   : "${QUEST_MUSIC_ENABLED:=1}"
   : "${QUEST_SFX_ENABLED:=1}"
+  if [[ -f "$QUEST_BOSS_STATE_FILE" ]]; then
+    source "$QUEST_BOSS_STATE_FILE"
+  fi
+  : "${QUEST_BOSS_ACTIVE:=0}"
+  : "${QUEST_BOSS_NAME:=}"
+  : "${QUEST_BOSS_HP:=0}"
+  : "${QUEST_BOSS_MAX_HP:=0}"
+  : "${QUEST_BOSS_PHASE:=1}"
+  : "${QUEST_BOSS_TURNS:=0}"
+  : "${QUEST_BOSS_GUARD:=0}"
+  : "${QUEST_BOSS_CHARGE:=0}"
+  : "${QUEST_BOSS_CONTEXT:=}"
 
   typeset -g QUEST_STATE_DIRTY=1
   _quest_save_state
@@ -362,7 +414,7 @@ function _quest_apply_command_outcome() {
     typeset -g QUEST_LAST_REWARD_GOLD="$gold"
 
     if (( xp >= 15 || gold >= 6 )); then
-      _quest_queue_message "Reward earned: +${xp} XP, +${gold} gold from \`${command}\`"
+      _quest_queue_message "Reward earned: +${xp} XP, +${gold} gold from ${command}"
       _quest_log_event "Rewarded ${xp} XP and ${gold} gold for ${command}"
     fi
   else
@@ -373,13 +425,26 @@ function _quest_apply_command_outcome() {
     typeset -g QUEST_LAST_DAMAGE="$damage"
     typeset -g QUEST_LAST_REWARD_XP=0
     typeset -g QUEST_LAST_REWARD_GOLD=0
-    _quest_queue_message "You took ${damage} damage from \`${command}\`"
+    _quest_queue_message "You took ${damage} damage from ${command}"
 
     if (( QUEST_HP <= 0 )); then
       (( QUEST_GOLD = QUEST_GOLD > 10 ? QUEST_GOLD - 10 : 0 ))
       (( QUEST_HP = QUEST_MAX_HP ))
       _quest_queue_message "You were downed and respawned at camp. -10 gold, HP restored."
       _quest_log_event "Downed by ${command}"
+      if (( QUEST_BOSS_ACTIVE )); then
+        _quest_queue_message "${QUEST_BOSS_NAME} has driven you from the arena."
+        _quest_log_event "Lost boss fight against ${QUEST_BOSS_NAME}"
+        typeset -g QUEST_BOSS_ACTIVE=0
+        typeset -g QUEST_BOSS_NAME=''
+        typeset -g QUEST_BOSS_HP=0
+        typeset -g QUEST_BOSS_MAX_HP=0
+        typeset -g QUEST_BOSS_PHASE=1
+        typeset -g QUEST_BOSS_TURNS=0
+        typeset -g QUEST_BOSS_GUARD=0
+        typeset -g QUEST_BOSS_CHARGE=0
+        typeset -g QUEST_BOSS_CONTEXT=''
+      fi
     fi
   fi
 
@@ -442,8 +507,8 @@ function _quest_preexec() {
 }
 
 function _quest_precmd() {
-  local exit_code now
-  exit_code=$?
+  local exit_code=$?
+  local now
   now="${EPOCHREALTIME:-}"
 
   typeset -g QUEST_LAST_STATUS="$exit_code"
@@ -553,6 +618,9 @@ function quest-stats() {
   else
     print -P "%F{178}Music:%f %F{160}stopped%f   %F{178}SFX:%f %F{230}${QUEST_SFX_ENABLED}%f"
   fi
+  if (( QUEST_BOSS_ACTIVE )); then
+    print -P "%F{178}Boss:%f %F{160}${QUEST_BOSS_NAME}%f   %F{178}Boss HP:%f %F{230}${QUEST_BOSS_HP}/${QUEST_BOSS_MAX_HP}%f   %F{178}Charge:%f %F{230}${QUEST_BOSS_CHARGE}/3%f"
+  fi
 }
 
 function quest-journal() {
@@ -575,12 +643,20 @@ Quest Mode Commands
 Core
   quest-docs         Show this guide.
   quest-examples     Show copy-paste examples that trigger quest mechanics.
-  quest-boss         Show a sample boss-fight runbook for the current area.
+  quest-boss         Show the current boss encounter or tell you how to start one.
   quest-stats        Show hero stats, progression, music, and SFX state.
   quest-journal      Show recent quest events.
   quest-log          Show git status for the current repo.
   quest-map          Show your current zone.
   quest-rest         Recover 10 HP.
+
+Boss Fight
+  quest-boss-start   Start a real boss fight for the current zone.
+  quest-boss-status  Show current boss and available actions.
+  quest-boss-attack  Perform a basic attack.
+  quest-boss-defend  Brace for the next boss hit and recover a little HP.
+  quest-boss-special Spend 3 charge to unleash a heavy attack.
+  quest-boss-flee    Leave the boss fight and lose 5 gold.
 
 Audio
   quest-music-start  Start ambient tavern music.
@@ -644,80 +720,204 @@ See a full mini run
   quest-journal
 
 See a boss-fight style sequence
-  quest-boss
-  This prints a themed challenge sequence for your current area or repo.
+  quest-boss-start
+  quest-boss-status
+  quest-boss-attack
+  quest-boss-defend
+  quest-boss-special
+  quest-boss-flee
+  Start the fight, build charge with attack or defend, then spend it with special.
 EOF
 }
 
-function quest-boss() {
-  local zone branch boss_name
-  zone="$(_quest_zone_name)"
-  branch="$(_quest_git_branch 2>/dev/null)"
+function _quest_reset_boss() {
+  typeset -g QUEST_BOSS_ACTIVE=0
+  typeset -g QUEST_BOSS_NAME=''
+  typeset -g QUEST_BOSS_HP=0
+  typeset -g QUEST_BOSS_MAX_HP=0
+  typeset -g QUEST_BOSS_PHASE=1
+  typeset -g QUEST_BOSS_TURNS=0
+  typeset -g QUEST_BOSS_GUARD=0
+  typeset -g QUEST_BOSS_CHARGE=0
+  typeset -g QUEST_BOSS_CONTEXT=''
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+}
 
-  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    boss_name="The Merge Warden"
-    cat <<EOF
-Boss Fight: ${boss_name}
-Arena: ${zone}
-Questline: ${branch:-detached-quest}
-
-Suggested battle flow
-  1. Scout the arena
-     quest-log
-     git diff --stat
-
-  2. Reveal hidden weaknesses
-     rg TODO .
-     git branch --show-current
-
-  3. Survive incoming damage
-     Run one intentionally failing command if you want to watch HP drop:
-     false
-
-  4. Counterattack
-     Run your usual test or check command for this repo.
-     Example:
-     git status
-
-  5. Land the finisher
-     git add <files>
-     git commit -m "Defeat ${boss_name}"
-
-What this demonstrates
-  - HP loss from failures
-  - passive healing from successful commands
-  - higher rewards from git activity
-  - journal entries and streak bonuses
-EOF
-  else
-    boss_name="The Ruins Sentinel"
-    cat <<EOF
-Boss Fight: ${boss_name}
-Arena: ${zone}
-
-Suggested battle flow
-  1. Enter a new zone
-     mkdir -p /tmp/ruins-sentinel
-     cd /tmp/ruins-sentinel
-
-  2. Take a hit
-     false
-
-  3. Recover and gather strength
-     pwd
-     ls
-     quest-rest
-
-  4. Check your battle log
-     quest-stats
-     quest-journal
-
-What this demonstrates
-  - zone discovery rewards
-  - HP loss and healing
-  - persistent progression outside a git repo
-EOF
+function _quest_boss_maybe_phase_shift() {
+  if (( QUEST_BOSS_ACTIVE && QUEST_BOSS_PHASE == 1 && QUEST_BOSS_HP * 2 <= QUEST_BOSS_MAX_HP )); then
+    typeset -g QUEST_BOSS_PHASE=2
+    _quest_play_sfx discovery
+    _quest_queue_message "${QUEST_BOSS_NAME} enters phase two and enrages."
+    _quest_log_event "${QUEST_BOSS_NAME} entered phase two"
   fi
+}
+
+function _quest_boss_victory() {
+  local xp_reward gold_reward
+  xp_reward=$(( 40 + QUEST_LEVEL * 10 + QUEST_BOSS_PHASE * 8 ))
+  gold_reward=$(( 25 + QUEST_LEVEL * 5 + QUEST_BOSS_PHASE * 6 ))
+
+  (( QUEST_XP += xp_reward ))
+  (( QUEST_GOLD += gold_reward ))
+  (( QUEST_HP = QUEST_HP + 12 > QUEST_MAX_HP ? QUEST_MAX_HP : QUEST_HP + 12 ))
+  _quest_play_sfx level-up
+  _quest_queue_message "Victory! ${QUEST_BOSS_NAME} is defeated. +${xp_reward} XP, +${gold_reward} gold."
+  _quest_log_event "Defeated ${QUEST_BOSS_NAME}"
+  _quest_reset_boss
+  _quest_resolve_level_progress
+}
+
+function _quest_boss_enemy_turn() {
+  local damage
+  (( QUEST_BOSS_ACTIVE )) || return
+
+  _quest_boss_maybe_phase_shift
+  damage=$(( (QUEST_BOSS_PHASE == 1 ? 8 : 12) + (RANDOM % 4) + QUEST_LEVEL ))
+
+  if (( QUEST_BOSS_GUARD )); then
+    damage=$(( (damage + 1) / 2 ))
+    typeset -g QUEST_BOSS_GUARD=0
+  fi
+
+  (( QUEST_HP -= damage ))
+  typeset -g QUEST_LAST_DAMAGE="$damage"
+  _quest_play_sfx damage
+  _quest_queue_message "${QUEST_BOSS_NAME} hits you for ${damage} damage."
+
+  if (( QUEST_HP <= 0 )); then
+    (( QUEST_GOLD = QUEST_GOLD > 10 ? QUEST_GOLD - 10 : 0 ))
+    (( QUEST_HP = QUEST_MAX_HP ))
+    _quest_queue_message "You were defeated by ${QUEST_BOSS_NAME}. Respawned at camp, -10 gold."
+    _quest_log_event "Lost boss fight against ${QUEST_BOSS_NAME}"
+    _quest_reset_boss
+    return
+  fi
+
+  (( QUEST_BOSS_CHARGE < 3 )) && (( QUEST_BOSS_CHARGE += 1 ))
+}
+
+function quest-boss-start() {
+  local branch
+
+  if (( QUEST_BOSS_ACTIVE )); then
+    quest-boss-status
+    return
+  fi
+
+  branch="$(_quest_git_branch 2>/dev/null)"
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    typeset -g QUEST_BOSS_NAME="The Merge Warden"
+    typeset -g QUEST_BOSS_MAX_HP=$(( 90 + QUEST_LEVEL * 10 ))
+    typeset -g QUEST_BOSS_CONTEXT="${branch:-detached-quest}"
+  else
+    typeset -g QUEST_BOSS_NAME="The Ruins Sentinel"
+    typeset -g QUEST_BOSS_MAX_HP=$(( 72 + QUEST_LEVEL * 8 ))
+    typeset -g QUEST_BOSS_CONTEXT="$(_quest_zone_name)"
+  fi
+
+  typeset -g QUEST_BOSS_ACTIVE=1
+  typeset -g QUEST_BOSS_HP=$QUEST_BOSS_MAX_HP
+  typeset -g QUEST_BOSS_PHASE=1
+  typeset -g QUEST_BOSS_TURNS=0
+  typeset -g QUEST_BOSS_GUARD=0
+  typeset -g QUEST_BOSS_CHARGE=0
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+  _quest_log_event "Started boss fight against ${QUEST_BOSS_NAME}"
+
+  print -P "%F{178}${QUEST_BOSS_NAME} emerges in ${QUEST_BOSS_CONTEXT}.%f"
+  quest-boss-status
+}
+
+function quest-boss-status() {
+  if (( ! QUEST_BOSS_ACTIVE )); then
+    print -P '%F{178}No boss is active.%f'
+    print -P '%F{230}Run `quest-boss-start` to begin an encounter.%f'
+    return
+  fi
+
+  print -P "%F{178}Boss:%f %F{230}${QUEST_BOSS_NAME}%f"
+  print -P "%F{178}Boss HP:%f %F{230}${QUEST_BOSS_HP}/${QUEST_BOSS_MAX_HP}%f   %F{178}Phase:%f %F{230}${QUEST_BOSS_PHASE}%f   %F{178}Turns:%f %F{230}${QUEST_BOSS_TURNS}%f"
+  print -P "%F{178}Hero HP:%f %F{230}${QUEST_HP}/${QUEST_MAX_HP}%f   %F{178}Charge:%f %F{230}${QUEST_BOSS_CHARGE}/3%f   %F{178}Guard:%f %F{230}${QUEST_BOSS_GUARD}%f"
+  print -P '%F{178}Actions:%f quest-boss-attack, quest-boss-defend, quest-boss-special, quest-boss-flee'
+}
+
+function quest-boss-attack() {
+  local damage
+  (( QUEST_BOSS_ACTIVE )) || { quest-boss-status; return 1; }
+
+  damage=$(( 10 + QUEST_LEVEL * 2 + (RANDOM % 6) + QUEST_SUCCESS_STREAK / 4 ))
+  (( QUEST_BOSS_HP -= damage ))
+  (( QUEST_BOSS_TURNS += 1 ))
+  (( QUEST_BOSS_CHARGE < 3 )) && (( QUEST_BOSS_CHARGE += 1 ))
+  _quest_queue_message "You strike ${QUEST_BOSS_NAME} for ${damage} damage."
+
+  if (( QUEST_BOSS_HP <= 0 )); then
+    _quest_boss_victory
+  else
+    _quest_boss_enemy_turn
+  fi
+
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+  quest-boss-status
+}
+
+function quest-boss-defend() {
+  local recover
+  (( QUEST_BOSS_ACTIVE )) || { quest-boss-status; return 1; }
+
+  recover=$(( 3 + QUEST_LEVEL ))
+  (( QUEST_HP = QUEST_HP + recover > QUEST_MAX_HP ? QUEST_MAX_HP : QUEST_HP + recover ))
+  typeset -g QUEST_BOSS_GUARD=1
+  (( QUEST_BOSS_TURNS += 1 ))
+  (( QUEST_BOSS_CHARGE < 3 )) && (( QUEST_BOSS_CHARGE += 1 ))
+  _quest_queue_message "You brace for impact and recover ${recover} HP."
+  _quest_boss_enemy_turn
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+  quest-boss-status
+}
+
+function quest-boss-special() {
+  local damage
+  (( QUEST_BOSS_ACTIVE )) || { quest-boss-status; return 1; }
+
+  if (( QUEST_BOSS_CHARGE < 3 )); then
+    print -P '%F{160}Your special is not ready. Build 3 charge first.%f'
+    return 1
+  fi
+
+  damage=$(( 24 + QUEST_LEVEL * 3 + (RANDOM % 10) ))
+  typeset -g QUEST_BOSS_CHARGE=0
+  (( QUEST_BOSS_HP -= damage ))
+  (( QUEST_BOSS_TURNS += 1 ))
+  _quest_play_sfx discovery
+  _quest_queue_message "You unleash a special attack for ${damage} damage."
+
+  if (( QUEST_BOSS_HP <= 0 )); then
+    _quest_boss_victory
+  else
+    _quest_boss_enemy_turn
+  fi
+
+  typeset -g QUEST_STATE_DIRTY=1
+  _quest_save_state
+  quest-boss-status
+}
+
+function quest-boss-flee() {
+  (( QUEST_BOSS_ACTIVE )) || { quest-boss-status; return 1; }
+
+  (( QUEST_GOLD = QUEST_GOLD > 5 ? QUEST_GOLD - 5 : 0 ))
+  _quest_queue_message "You flee from ${QUEST_BOSS_NAME}. -5 gold."
+  _quest_log_event "Fled boss fight against ${QUEST_BOSS_NAME}"
+  _quest_reset_boss
+}
+
+function quest-boss() {
+  quest-boss-status
 }
 
 function quest-rest() {
