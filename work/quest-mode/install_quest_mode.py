@@ -49,6 +49,16 @@ def install_background(background_file: Path, home: Path):
     return target_file
 
 
+def initialize_state_dir(home: Path):
+    state_dir = home / ".config" / "quest-mode" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in ("journal.log", "discovered-zones"):
+        target = state_dir / file_name
+        if not target.exists():
+            target.write_text("")
+    return state_dir
+
+
 def configure_iterm(background_target: Path, home: Path):
     plist_path = home / "Library" / "Preferences" / "com.googlecode.iterm2.plist"
     with plist_path.open("rb") as handle:
@@ -156,11 +166,13 @@ def main():
     backup_dir = backup_files(home)
     quest_target = install_shell_overlay(quest_file, home)
     background_target = install_background(background_file, home)
+    state_dir = initialize_state_dir(home)
     plist_path, guid = configure_iterm(background_target, home)
 
     print(f"backup_dir={backup_dir}")
     print(f"quest_file={quest_target}")
     print(f"background_file={background_target}")
+    print(f"state_dir={state_dir}")
     print(f"iterm_plist={plist_path}")
     print(f"iterm_guid={guid}")
 
