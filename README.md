@@ -3,7 +3,7 @@
 A portable `zsh + iTerm2` quest overlay with:
 
 - RPG-style prompt and persistent stats
-- ambient music and sound effects
+- ambience and sound effects
 - zone discovery, XP, gold, HP, and streaks
 - manual and natural boss encounters
 - a one-command installer for another Mac
@@ -20,6 +20,8 @@ A portable `zsh + iTerm2` quest overlay with:
   Ambient track and sound effects.
 - `install.sh`
   The easiest way to install from this repo on another device.
+- `uninstall.sh`
+  Restores the latest backup and removes Quest Mode files.
 
 ## Requirements
 
@@ -60,6 +62,26 @@ If music is already running from an older session:
 ```bash
 quest-music-stop
 quest-music-start
+```
+
+## Uninstall
+
+To revert Quest Mode with the least manual cleanup:
+
+```bash
+./uninstall.sh
+```
+
+This will:
+
+- restore the most recent backed-up `~/.zshrc` if available
+- restore the most recent backed-up iTerm2 plist if available
+- remove `~/.config/quest-mode`
+
+Then quit iTerm2 fully, reopen it, and run:
+
+```bash
+exec zsh
 ```
 
 ## Daily Commands

@@ -22,4 +22,7 @@ Useful commands:
   quest-docs
   quest-examples
   quest-stats
+
+Rollback:
+  ./uninstall.sh
 EOF
