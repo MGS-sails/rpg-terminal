@@ -15,7 +15,7 @@ typeset -g QUEST_JOURNAL_FILE="${QUEST_STATE_DIR}/journal.log"
 typeset -g QUEST_ZONES_FILE="${QUEST_STATE_DIR}/discovered-zones"
 typeset -g QUEST_AUDIO_DIR="${HOME}/.config/quest-mode/audio"
 typeset -g QUEST_AUDIO_PID_FILE="${QUEST_STATE_DIR}/music.pid"
-typeset -g QUEST_AUDIO_AMBIENT="${QUEST_AUDIO_DIR}/quest-ambient.wav"
+typeset -g QUEST_AUDIO_AMBIENT="${QUEST_AUDIO_DIR}/quest-ambient.mp3"
 typeset -g QUEST_AUDIO_DISCOVERY="${QUEST_AUDIO_DIR}/quest-discovery.wav"
 typeset -g QUEST_AUDIO_LEVEL_UP="${QUEST_AUDIO_DIR}/quest-level-up.wav"
 typeset -g QUEST_AUDIO_DAMAGE="${QUEST_AUDIO_DIR}/quest-damage.wav"
@@ -119,6 +119,9 @@ function _quest_queue_message() {
 
 function _quest_audio_ready() {
   command -v afplay >/dev/null 2>&1 || return 1
+  if [[ ! -f "$QUEST_AUDIO_AMBIENT" && -f "${QUEST_AUDIO_DIR}/quest-ambient.wav" ]]; then
+    typeset -g QUEST_AUDIO_AMBIENT="${QUEST_AUDIO_DIR}/quest-ambient.wav"
+  fi
   [[ -f "$QUEST_AUDIO_AMBIENT" ]] || return 1
   return 0
 }
@@ -343,7 +346,7 @@ function _quest_format_duration() {
 }
 
 function _quest_battery_percent() {
-  pmset -g batt 2>/dev/null | awk -F'; *' 'NR == 2 { gsub(/%/, "", $2); print $2 }'
+  pmset -g batt 2>/dev/null | awk 'NR == 2 { if (match($0, /[0-9]+%/)) { print substr($0, RSTART, RLENGTH - 1) } }'
 }
 
 function _quest_level_floor() {

@@ -52,8 +52,9 @@ def install_background(background_file: Path, home: Path):
 def install_audio(audio_dir: Path, home: Path):
     target_dir = home / ".config" / "quest-mode" / "audio"
     target_dir.mkdir(parents=True, exist_ok=True)
-    for source in audio_dir.glob("*.wav"):
-        shutil.copy2(source, target_dir / source.name)
+    for pattern in ("*.wav", "*.mp3", "*.m4a"):
+        for source in audio_dir.glob(pattern):
+            shutil.copy2(source, target_dir / source.name)
     return target_dir
 
 
