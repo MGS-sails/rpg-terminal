@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import plistlib
 import shutil
 import uuid
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+
+
+QUEST_MODE_BLOCK_START = "# >>> Codex quest mode >>>"
+QUEST_MODE_BLOCK_END = "# <<< Codex quest mode <<<"
+QUEST_MODE_SOURCE_LINE = '[[ -f "$HOME/.config/quest-mode/quest-mode.zsh" ]] && source "$HOME/.config/quest-mode/quest-mode.zsh"'
 
 
 def rgb(red, green, blue, alpha=1.0):
@@ -25,6 +31,44 @@ def set_color(bookmark, key, value):
     bookmark[f"{key} (Light)"] = value
 
 
+def normalize_zshrc(contents: str):
+    lines = contents.splitlines()
+    filtered = []
+    inside_managed_block = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped == QUEST_MODE_BLOCK_START:
+            inside_managed_block = True
+            continue
+        if stripped == QUEST_MODE_BLOCK_END:
+            inside_managed_block = False
+            continue
+        if inside_managed_block:
+            continue
+        if stripped == "# Codex quest mode":
+            continue
+        if stripped == QUEST_MODE_SOURCE_LINE:
+            continue
+
+        filtered.append(line)
+
+    while filtered and filtered[-1] == "":
+        filtered.pop()
+
+    filtered.extend(
+        [
+            "",
+            QUEST_MODE_BLOCK_START,
+            QUEST_MODE_SOURCE_LINE,
+            QUEST_MODE_BLOCK_END,
+            "",
+        ]
+    )
+    return "\n".join(filtered)
+
+
 def install_shell_overlay(quest_file: Path, home: Path):
     target_dir = home / ".config" / "quest-mode"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -33,10 +77,11 @@ def install_shell_overlay(quest_file: Path, home: Path):
     shutil.copy2(quest_file, target_file)
 
     zshrc = home / ".zshrc"
-    source_line = '[[ -f "$HOME/.config/quest-mode/quest-mode.zsh" ]] && source "$HOME/.config/quest-mode/quest-mode.zsh"'
-    contents = zshrc.read_text()
-    if source_line not in contents:
-        zshrc.write_text(contents.rstrip() + "\n\n# Codex quest mode\n" + source_line + "\n")
+    if zshrc.exists():
+        contents = zshrc.read_text()
+    else:
+        contents = ""
+    zshrc.write_text(normalize_zshrc(contents))
 
     return target_file
 
@@ -68,7 +113,19 @@ def initialize_state_dir(home: Path):
     return state_dir
 
 
-def configure_iterm(background_target: Path, home: Path):
+def load_profile_template(profile_template_json: Path | None):
+    if profile_template_json is None or not profile_template_json.exists():
+        return None
+
+    data = json.loads(profile_template_json.read_text())
+    quest_profile = data.get("quest_profile")
+    if not isinstance(quest_profile, dict):
+        return None
+
+    return quest_profile
+
+
+def configure_iterm(background_target: Path, home: Path, profile_template_json: Path | None = None):
     plist_path = home / "Library" / "Preferences" / "com.googlecode.iterm2.plist"
     with plist_path.open("rb") as handle:
         prefs = plistlib.load(handle)
@@ -79,18 +136,29 @@ def configure_iterm(background_target: Path, home: Path):
 
     default_guid = prefs.get("Default Bookmark Guid")
     template = next((b for b in bookmarks if b.get("Guid") == default_guid), bookmarks[0])
+    saved_profile = load_profile_template(profile_template_json)
 
     quest_profile = next((b for b in bookmarks if b.get("Name") == "Quest Mode"), None)
     if quest_profile is None:
-        quest_profile = deepcopy(template)
+        quest_profile = deepcopy(saved_profile or template)
         quest_profile["Guid"] = str(uuid.uuid4()).upper()
         bookmarks.append(quest_profile)
+    elif saved_profile is not None:
+        current_guid = quest_profile.get("Guid", str(uuid.uuid4()).upper())
+        quest_profile.clear()
+        quest_profile.update(deepcopy(saved_profile))
+        quest_profile["Guid"] = current_guid
 
     quest_profile["Name"] = "Quest Mode"
     quest_profile["Shortcut"] = "Quest Mode"
+    quest_profile["Description"] = "Quest Mode"
+    quest_profile["Custom Command"] = "No"
+    quest_profile["Custom Directory"] = "No"
+    quest_profile["Working Directory"] = str(home)
     quest_profile["Normal Font"] = "MesloLGS-NF-Regular 16"
     quest_profile["Use Bold Font"] = True
     quest_profile["Use Italic Font"] = True
+    quest_profile["Draw Powerline Glyphs"] = True
     quest_profile["Blinking Cursor"] = True
     quest_profile["Background Image Location"] = str(background_target)
     quest_profile["Badge Text"] = "QUEST MODE"
@@ -166,6 +234,7 @@ def main():
     parser.add_argument("--quest-file", required=True, type=Path)
     parser.add_argument("--background-file", required=True, type=Path)
     parser.add_argument("--audio-dir", required=True, type=Path)
+    parser.add_argument("--iterm-profile-template-json", type=Path)
     parser.add_argument("--home", default=Path.home(), type=Path)
     args = parser.parse_args()
 
@@ -173,13 +242,18 @@ def main():
     quest_file = args.quest_file.expanduser().resolve()
     background_file = args.background_file.expanduser().resolve()
     audio_dir = args.audio_dir.expanduser().resolve()
+    profile_template_json = (
+        args.iterm_profile_template_json.expanduser().resolve()
+        if args.iterm_profile_template_json is not None
+        else None
+    )
 
     backup_dir = backup_files(home)
     quest_target = install_shell_overlay(quest_file, home)
     background_target = install_background(background_file, home)
     audio_target = install_audio(audio_dir, home)
     state_dir = initialize_state_dir(home)
-    plist_path, guid = configure_iterm(background_target, home)
+    plist_path, guid = configure_iterm(background_target, home, profile_template_json)
 
     print(f"backup_dir={backup_dir}")
     print(f"quest_file={quest_target}")

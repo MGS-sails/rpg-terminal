@@ -1,0 +1,10 @@
+# Minimal example for enabling Quest Mode from your ~/.zshrc
+#
+# The installer appends the source line automatically, so you do not usually
+# need to edit ~/.zshrc by hand. This file is only here as a portable example.
+
+source_line='[[ -f "$HOME/.config/quest-mode/quest-mode.zsh" ]] && source "$HOME/.config/quest-mode/quest-mode.zsh"'
+
+if [[ -n "${ZSH_VERSION:-}" ]]; then
+  eval "$source_line"
+fi

@@ -14,6 +14,8 @@ A portable `zsh + iTerm2` quest overlay with:
   The main shell/game logic.
 - `work/quest-mode/install_quest_mode.py`
   Installs the theme into your home directory and iTerm2 profile.
+- `work/quest-mode/zshrc.example`
+  A minimal example showing the single `~/.zshrc` hook Quest Mode needs.
 - `outputs/quest-mode-bg.png`
   The quest background image.
 - `outputs/quest-audio/`
@@ -32,6 +34,25 @@ A portable `zsh + iTerm2` quest overlay with:
 - `MesloLGS NF` or another Nerd Font installed
 
 The installer expects iTerm2 preferences to exist already, so open iTerm2 once before installing.
+
+## Shell Hook
+
+Quest Mode does not need your full personal `~/.zshrc` in version control. The
+only shell hook it needs is:
+
+```zsh
+[[ -f "$HOME/.config/quest-mode/quest-mode.zsh" ]] && source "$HOME/.config/quest-mode/quest-mode.zsh"
+```
+
+That example also lives in:
+
+```text
+work/quest-mode/zshrc.example
+```
+
+The installer adds that line automatically if it is missing.
+It also rewrites the Quest Mode block so it stays at the very end of `~/.zshrc`,
+which helps avoid prompt conflicts on other Macs.
 
 ## Install On Another Device
 
@@ -118,6 +139,20 @@ After editing the repo locally, reinstall with:
 ```bash
 ./install.sh
 ```
+
+## Cross-Mac Notes
+
+Quest Mode now seeds the iTerm2 profile from the known-good snapshot in this
+repo instead of only inheriting the target Mac's default profile. That makes
+powerline glyphs, spacing, colors, badge styling, and the background image more
+consistent across machines.
+
+If a new Mac still looks off, check these first:
+
+- open iTerm2 once before installing
+- make sure `MesloLGS NF` or another Nerd Font is installed
+- run `exec zsh` after installation
+- quit and reopen iTerm2 so the refreshed profile is picked up cleanly
 
 ## Notes
 
